@@ -1,0 +1,57 @@
+on:
+  workflow_dispatch: {}
+
+jobs:
+  'build-and-release':
+    runs-on: ubuntu-latest
+    steps:
+    - name: 'clone object_detector repo'
+      run: |
+        git clone https://github.com/tensorflow/models .
+
+    - name: 'install dependencies'
+      run: |
+        sudo apt update
+        sudo apt install -y ca-certificates && sudo update-ca-certificates
+        sudo apt install -y protobuf-compiler
+
+    - name: 'run precompilation tasks'
+      run: |
+        cd research
+        protoc object_detection/protos/*.proto --python_out=.
+        cp object_detection/packages/tf2/setup.py .
+        python -m pip install . > /dev/null
+
+    - name: 'build pip wheel'
+      run: |
+        cd research
+        mkdir -p /tmp/wheel
+        pip wheel . -w /tmp/wheel
+
+    - name: 'set environment variables'
+      run: |
+        ASSET_PATH="$(find /tmp/wheel/object_detection-*.whl)"
+        echo "RELEASE_TAG=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+        echo "ASSET_PATH=$ASSET_PATH" >> $GITHUB_ENV
+        echo "ASSET_NAME=$(basename $ASSET_PATH)" >> $GITHUB_ENV
+
+    - name: 'create release'
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ env.RELEASE_TAG }}
+        release_name: Release ${{ env.RELEASE_TAG }}
+        draft: false
+        prerelease: false
+
+    - name: 'upload release assets'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_name: ${{ env.ASSET_NAME }}
+        asset_path: ${{ env.ASSET_PATH }}
+        asset_content_type: application/octet-stream
