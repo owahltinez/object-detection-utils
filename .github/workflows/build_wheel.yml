@@ -24,6 +24,7 @@ jobs:
 
     - name: 'build pip wheel'
       run: |
+        cd research
         mkdir -p /tmp/wheel
         pip wheel . -w /tmp/wheel
 
