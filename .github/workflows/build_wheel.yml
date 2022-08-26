@@ -2,7 +2,7 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  'build and upload wheel package':
+  'build-and-release':
     runs-on: ubuntu-latest
     steps:
     - name: 'clone object_detector repo'
