@@ -21,7 +21,7 @@ class KerasModelWrapper(tf.keras.Model):
     def set_trainable_variables(self, trainable_variables):
         self._custom_trainable_variables = trainable_variables
 
-    def call(self, inputs, **kwargs):
+    def call(self, inputs, postprocess=True, **kwargs):
         # Preprocess incoming images.
         images, shapes = self._preprocessing_function(inputs)
 
@@ -29,11 +29,14 @@ class KerasModelWrapper(tf.keras.Model):
         y_pred = self._predictor(images, **kwargs)
 
         # Perform post-processing of predictions.
-        y_pred["preprocessed_inputs"] = images
-        output = self._postprocessing_function(y_pred, shapes)
-        output['detection_classes'] = tf.cast(output['detection_classes'], tf.int32)
-        output['detection_classes'] = output['detection_classes'] + tf.constant(1)
-        return output
+        if postprocess:
+            y_pred["preprocessed_inputs"] = images
+            output = self._postprocessing_function(y_pred, shapes)
+            output['detection_classes'] = tf.cast(output['detection_classes'], tf.int32)
+            output['detection_classes'] = output['detection_classes'] + tf.constant(1)
+            y_pred = output
+
+        return y_pred
 
     def compile(self, optimizer, loss=None, **kwargs):
         assert loss is None, "Providing a custom loss function is not supported"
@@ -75,7 +78,7 @@ class KerasModelWrapper(tf.keras.Model):
 
         # Step forward.
         with tf.GradientTape() as tape:
-            y_pred = self._predictor(images, training=True)
+            y_pred = self(images, training=True, postprocess=False)
             loss_value = self.loss(y_true, y_pred, shapes=shapes)
 
         # Compute and apply gradients to our model's weights.
