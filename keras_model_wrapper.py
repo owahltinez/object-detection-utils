@@ -21,22 +21,22 @@ class KerasModelWrapper(tf.keras.Model):
     def set_trainable_variables(self, trainable_variables):
         self._custom_trainable_variables = trainable_variables
 
-    def call(self, inputs, postprocess=True, **kwargs):
+    def call(self, inputs, **kwargs):
         # Preprocess incoming images.
         images, shapes = self._preprocessing_function(inputs)
 
         # Pass-through to the actual predictor.
         y_pred = self._predictor(images, **kwargs)
-
-        # Perform post-processing of predictions.
-        if postprocess:
-            y_pred["preprocessed_inputs"] = images
-            output = self._postprocessing_function(y_pred, shapes)
-            output['detection_classes'] = tf.cast(output['detection_classes'], tf.int32)
-            output['detection_classes'] = output['detection_classes'] + tf.constant(1)
-            y_pred = output
-
+        y_pred["preprocessed_inputs"] = images
+        y_pred["preprocessed_shapes"] = shapes
         return y_pred
+
+    def postprocess(self, y_pred):
+        y_pred["preprocessed_inputs"] = tf.convert_to_tensor(y_pred["preprocessed_inputs"])
+        output = self._postprocessing_function(y_pred, y_pred["preprocessed_shapes"])
+        output["detection_classes"] = tf.cast(output["detection_classes"], tf.int32)
+        output["detection_classes"] = output["detection_classes"] + tf.constant(1)
+        return output
 
     def compile(self, optimizer, loss=None, **kwargs):
         assert loss is None, "Providing a custom loss function is not supported"
@@ -62,10 +62,20 @@ class KerasModelWrapper(tf.keras.Model):
 
     def _build_loss_function(self, detector):
         def loss_func(y_true, y_pred, shapes=None):
+
+            # Ignore all the boxes that were added for input padding purposes.
+            y_true_unpadded = {}
+            counts = [ct[0] for ct in y_true["detection_count"]]
+            for key in ["detection_boxes", "detection_classes"]:
+                y_true_unpadded[key] = [batch[:ct] for ct, batch in zip(counts, y_true[key])]
+
+            # We have to feed the y_true data separately to the inner detector.
             detector.provide_groundtruth(
-                groundtruth_boxes_list=y_true["detection_boxes"],
-                groundtruth_classes_list=y_true["detection_classes"],
+                groundtruth_boxes_list=y_true_unpadded["detection_boxes"],
+                groundtruth_classes_list=y_true_unpadded["detection_classes"],
             )
+
+            # Finally, compute the losses.
             losses_dict = detector.loss(y_pred, shapes)
             return losses_dict["Loss/localization_loss"] + losses_dict["Loss/classification_loss"]
 
@@ -78,7 +88,7 @@ class KerasModelWrapper(tf.keras.Model):
 
         # Step forward.
         with tf.GradientTape() as tape:
-            y_pred = self(images, training=True, postprocess=False)
+            y_pred = self(images, training=True)
             loss_value = self.loss(y_true, y_pred, shapes=shapes)
 
         # Compute and apply gradients to our model's weights.
@@ -87,7 +97,7 @@ class KerasModelWrapper(tf.keras.Model):
         grads = tape.gradient(loss_value, trainable_variables)
         self.optimizer.apply_gradients(zip(grads, trainable_variables))
 
-        # NOTE: Metrics are not computed to avoid the costly post-processing calls.
+        # NOTE: Metrics are not computed to avoid the post-processing calls.
         # self.compiled_metrics.update_state(y_true, y_output)
         # metrics = {m.name: m.result() for m in self.metrics}
         return dict(loss=loss_value)
@@ -97,7 +107,24 @@ class KerasModelWrapper(tf.keras.Model):
         # NOTE: Sample weight is currently ignored by this family of models.
         input_data, y_true, _ = data_adapter.unpack_x_y_sample_weight(data)
 
-        # Iterate over the y_true vector here since we can't do it inside of the graph operations.
-        iter_keys = ["detection_boxes", "detection_classes", "detection_scores"]
-        y_true = {k: [v for v in y_true[k]] for k in iter_keys}
+        # Iterate over the y_true vector here since we can't do it inside
+        # of the graph operations.
+        y_true = {k: [v for v in y_true[k]] for k in y_true.keys()}
         return self._compiled_train_step(input_data, y_true)
+
+    def test_step(self, data):
+        data = data_adapter.expand_1d(data)
+        # NOTE: Sample weight is currently ignored by this family of models.
+        input_data, y_true, _ = data_adapter.unpack_x_y_sample_weight(data)
+
+        # Preprocess incoming images.
+        images, shapes = self._preprocessing_function(input_data)
+
+        # Perform predictions using our model *without* training.
+        y_pred = self(images, training=False)
+        loss_value = self.loss(y_true, y_pred, shapes=shapes)
+
+        # NOTE: Metrics are not computed to avoid the post-processing calls.
+        # self.compiled_metrics.update_state(y_true, y_output)
+        # metrics = {m.name: m.result() for m in self.metrics}
+        return dict(loss=loss_value)

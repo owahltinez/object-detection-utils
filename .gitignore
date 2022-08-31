@@ -1,0 +1,5 @@
+*.pyc
+*.whl
+.venv
+images/
+__pycache__/
