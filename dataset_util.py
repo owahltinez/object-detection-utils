@@ -48,13 +48,13 @@ def image_dataset_from_paths(
         f"List lengths must match, found: "
         f"{len(image_paths)} {len(detection_boxes)} {len(detection_classes)}"
     )
-    assert 0 not in detection_classes, "labels must be 1-indexed because 0 is the background label"
+    distinct_labels = [x for x in np.unique(sum(detection_classes, [])) if not np.isnan(x)]
+    assert 0 not in distinct_labels, "labels must be 1-indexed because 0 is the background label"
 
     # Put everything into a dataframe.
     df = pd.DataFrame({"file_path": image_paths})
     df["detection_boxes"] = detection_boxes
     df["detection_classes"] = detection_classes
-    distinct_labels = [x for x in np.unique(sum(detection_classes, [])) if not np.isnan(x)]
 
     # The annotated examples are all 100% certain.
     df["detection_scores"] = df["detection_boxes"].apply(lambda boxes: [1] * len(boxes))
@@ -122,13 +122,18 @@ def image_dataset_from_csv(file_path, **kwargs):
 
     labels = df.label.unique().tolist()
 
-    # NOTE: These operations can probably more efficiently done using
+    # NOTE: These operations can probably be more efficiently done using
     # vectorized operations from pandas, but this is fast enough.
     grouped_by_path = {path: [] for path in df.path}
     for _, row in df.iterrows():
-        label = labels.index(row.label)
+        label = labels.index(row.label) + 1
         bbox = [row.x_min, row.y_min, row.x_max, row.y_max]
-        record = dict(subset=row.set, file_path=row.path, detection_class=label, detection_box=bbox)
+        record = dict(
+            subset=row.set,
+            file_path=row.path,
+            detection_class=label,
+            detection_box=bbox,
+        )
         grouped_by_path[row.path].append(record)
 
     records = []
@@ -158,5 +163,6 @@ def image_dataset_from_csv(file_path, **kwargs):
             data_subset.detection_classes,
             **kwargs,
         )
+        setattr(datasets[subset_name], "class_names", labels)
 
     return datasets
